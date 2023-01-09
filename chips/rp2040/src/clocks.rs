@@ -900,19 +900,19 @@ impl Clocks {
         }
     }
 
-    pub fn enable_resus(&self) {
+    fn enable_resus(&self) {
         self.registers
             .clk_sys_resus_ctrl
             .modify(CLK_SYS_RESUS_CTRL::ENABLE::SET);
     }
 
-    pub fn disable_resus(&self) {
+    fn disable_resus(&self) {
         self.registers
             .clk_sys_resus_ctrl
             .modify(CLK_SYS_RESUS_CTRL::ENABLE::CLEAR);
     }
 
-    pub fn disable_sys_aux(&self) {
+    fn disable_sys_aux(&self) {
         self.registers
             .clk_sys_ctrl
             .modify(CLK_SYS_CTRL::SRC::CLK_REF);
@@ -924,7 +924,7 @@ impl Clocks {
         {}
     }
 
-    pub fn disable_ref_aux(&self) {
+    fn disable_ref_aux(&self) {
         self.registers
             .clk_ref_ctrl
             .modify(CLK_REF_CTRL::SRC::ROSC_CLKSRC_PH);
@@ -936,7 +936,7 @@ impl Clocks {
         {}
     }
 
-    pub fn pll_init(
+    fn pll_init(
         &self,
         clock: PllClock,
         xosc_freq: u32,
@@ -1004,17 +1004,17 @@ impl Clocks {
         registers.pwr.modify(PWR::POSTDIVPD::CLEAR);
     }
 
-    pub fn pll_deinit(&self, clock: PllClock) {
+    fn pll_deinit(&self, clock: PllClock) {
         self.pll_registers[clock as usize]
             .pwr
             .modify(PWR::PD::SET + PWR::DSMPD::SET + PWR::POSTDIVPD::SET + PWR::VCOPD::SET);
     }
 
-    pub fn set_frequency(&self, clock: Clock, freq: u32) {
+    fn set_frequency(&self, clock: Clock, freq: u32) {
         self.frequencies[clock as usize].set(freq);
     }
 
-    pub fn get_frequency(&self, clock: Clock) -> u32 {
+    fn get_frequency(&self, clock: Clock) -> u32 {
         self.frequencies[clock as usize].get()
     }
 
@@ -1060,7 +1060,7 @@ impl Clocks {
         unimplemented!()
     }
 
-    pub fn configure_gpio_out(
+    fn configure_gpio_out(
         &self,
         clock: Clock,
         auxiliary_source: GpioAuxiliaryClockSource,
@@ -1114,7 +1114,7 @@ impl Clocks {
         }
     }
 
-    pub fn configure_system(
+    fn configure_system(
         &self,
         source: SystemClockSource,
         auxiliary_source: SystemAuxiliaryClockSource,
@@ -1175,7 +1175,7 @@ impl Clocks {
         self.set_frequency(Clock::System, freq);
     }
 
-    pub fn configure_reference(
+    fn configure_reference(
         &self,
         source: ReferenceClockSource,
         auxiliary_source: ReferenceAuxiliaryClockSource,
@@ -1236,7 +1236,7 @@ impl Clocks {
         self.set_frequency(Clock::Reference, freq);
     }
 
-    pub fn configure_peripheral(
+    fn configure_peripheral(
         &self,
         auxiliary_source: PeripheralAuxiliaryClockSource,
         freq: u32,
@@ -1262,7 +1262,7 @@ impl Clocks {
         self.set_frequency(Clock::Peripheral, freq);
     }
 
-    pub fn configure_usb(
+    fn configure_usb(
         &self,
         auxiliary_source: UsbAuxiliaryClockSource,
         source_freq: u32,
@@ -1309,7 +1309,7 @@ impl Clocks {
         self.set_frequency(Clock::Usb, freq);
     }
 
-    pub fn configure_adc(
+    fn configure_adc(
         &self,
         auxiliary_source: AdcAuxiliaryClockSource,
         source_freq: u32,
@@ -1356,7 +1356,7 @@ impl Clocks {
         self.set_frequency(Clock::Adc, freq);
     }
 
-    pub fn configure_rtc(
+    fn configure_rtc(
         &self,
         auxiliary_source: RtcAuxiliaryClockSource,
         source_freq: u32,
