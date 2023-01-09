@@ -1,7 +1,111 @@
 //! Implements a text console over the UART that allows
 //! a terminal to inspect and control userspace processes.
 //!
-//! For a more in-depth documentation check /doc/Process_Console.md
+//! Protocol
+//! --------
+//!
+//! This module provides a simple text-based console to inspect and control
+//! which processes are running. The console has five commands:
+//!  - 'help' prints the available commands and arguments
+//!  - 'status' prints the current system status
+//!  - 'list' lists the current processes with their IDs and running state
+//!  - 'stop n' stops the process with name n
+//!  - 'start n' starts the stopped process with name n
+//!  - 'fault n' forces the process with name n into a fault state
+//!  - 'terminate n' terminates the running process with name n, moving to the Terminated state
+//!  - 'boot n' tries to boot a Terminated process with name n
+//!  - 'panic' causes the kernel to run the panic handler
+//!  - 'process n' prints the memory map of process with name n
+//!  - 'kernel' prints the kernel memory map
+//!
+//! ### `list` Command Fields:
+//!
+//! - `PID`: The identifier for the process. This can change if the process
+//!   restarts.
+//! - `Name`: The process name.
+//! - `Quanta`: How many times this process has exceeded its allotted time
+//!   quanta.
+//! - `Syscalls`: The number of system calls the process has made to the kernel.
+//! - `Restarts`: How many times this process has crashed and been restarted by
+//!   the kernel.
+//! - `Grants`: The number of grants that have been initialized for the process
+//!   out of the total number of grants defined by the kernel.
+//! - `State`: The state the process is in.
+//!
+//! Setup
+//! -----
+//!
+//! You need a device that provides the `hil::uart::UART` trait. This code
+//! connects a `ProcessConsole` directly up to USART0:
+//!
+//! ```rust
+//! # use kernel::{capabilities, hil, static_init};
+//! # use capsules::process_console::ProcessConsole;
+//!
+//! pub struct Capability;
+//! unsafe impl capabilities::ProcessManagementCapability for Capability {}
+//!
+//! let pconsole = static_init!(
+//!     ProcessConsole<usart::USART>,
+//!     ProcessConsole::new(&usart::USART0,
+//!                  115200,
+//!                  &mut console::WRITE_BUF,
+//!                  &mut console::READ_BUF,
+//!                  &mut console::COMMAND_BUF,
+//!                  kernel,
+//!                  Capability));
+//! hil::uart::UART::set_client(&usart::USART0, pconsole);
+//!
+//! pconsole.start();
+//! ```
+//!
+//! Using ProcessConsole
+//! --------------------
+//!
+//! With this capsule properly added to a board's `main.rs` and that kernel
+//! loaded to the board, make sure there is a serial connection to the board.
+//! Likely, this just means connecting a USB cable from a computer to the board.
+//! Next, establish a serial console connection to the board. An easy way to do
+//! this is to run:
+//!
+//! ```shell
+//! $ tockloader listen
+//! ```
+//!
+//! With that console open, you can issue commands. For example, to see all of
+//! the processes on the board, use `list`:
+//!
+//! ```text
+//! $ tockloader listen
+//! Using "/dev/cu.usbserial-c098e513000c - Hail IoT Module - TockOS"
+//!
+//! Listening for serial output.
+//! ProcessConsole::start
+//! Starting process console
+//! Initialization complete. Entering main loop
+//! Hello World!
+//! list
+//! PID    Name    Quanta  Syscalls  Restarts Grants  State
+//! 00     blink        0       113         0  1/12   Yielded
+//! 01     c_hello      0         8         0  3/12   Yielded
+//! ```
+//!
+//! To get a general view of the system, use the status command:
+//!
+//! ```text
+//! status
+//! Total processes: 2
+//! Active processes: 2
+//! Timeslice expirations: 0
+//! ```
+//!
+//! and you can control processes with the `start` and `stop` commands:
+//!
+//! ```text
+//! stop blink
+//! Process blink stopped
+//! ```
+
 use core::cell::Cell;
 use core::cmp;
 use core::fmt;
@@ -96,6 +200,7 @@ pub struct ProcessConsole<'a, A: Alarm<'a>, C: ProcessManagementCapability> {
     rx_buffer: TakeCell<'static, [u8]>,
     command_buffer: TakeCell<'static, [u8]>,
     command_index: Cell<usize>,
+    history: TakeCell<'static, CommandHistory<10, 32>>,
 
     /// Keep the previously read byte to consider \r\n sequences
     /// as a single \n.
@@ -118,6 +223,86 @@ pub struct ProcessConsole<'a, A: Alarm<'a>, C: ProcessManagementCapability> {
     /// This capsule needs to use potentially dangerous APIs related to
     /// processes, and requires a capability to access those APIs.
     capability: C,
+}
+
+#[derive(Copy, Clone)]
+pub struct Command<const LEN: usize> {
+    buf: [u8; LEN],
+    len: usize,
+}
+impl<const LEN: usize> Default for Command<LEN> {
+    fn default() -> Self {
+        Command {
+            buf: [0; LEN],
+            len: 0,
+        }
+    }
+}
+impl<const LEN: usize> Command<LEN> {
+    pub fn new() -> Command<LEN> {
+        Command {
+            buf: [0; LEN],
+            len: 0,
+        }
+    }
+
+    pub fn fill(&mut self, buf: &[u8]) -> Result<(), ErrorCode> {
+        let len = cmp::min(buf.len(), LEN);
+        self.buf[..len].copy_from_slice(&buf[..len]);
+        self.len = len;
+        Ok(())
+    }
+
+    pub fn clear(&mut self) {
+        self.len = 0;
+    }
+}
+
+#[derive(Copy, Clone)]
+pub struct CommandHistory<const HISTORY_LEN: usize, const COMMAND_LEN: usize> {
+    list: [Command<COMMAND_LEN>; HISTORY_LEN],
+    cursor: usize,
+    size: usize,
+}
+impl<const HISTORY_LEN: usize, const COMMAND_LEN: usize> CommandHistory<HISTORY_LEN, COMMAND_LEN> {
+    pub fn new() -> CommandHistory<HISTORY_LEN, COMMAND_LEN> {
+        CommandHistory {
+            list: [Command::default(); HISTORY_LEN],
+            cursor: 0,
+            size: 0,
+        }
+    }
+
+    pub fn push(&mut self, cmd_str: &[u8]) -> Result<(), ErrorCode> {
+        if self.size == HISTORY_LEN {
+            return Err(ErrorCode::NOMEM);
+        }
+
+        self.list[self.size].fill(cmd_str)?;
+        self.size += 1;
+
+        Ok(())
+    }
+
+    pub fn next(&mut self) -> Option<&[u8]> {
+        if self.cursor == self.size {
+            return None;
+        }
+
+        self.cursor += 1;
+
+        Some(&self.list[self.cursor - 1].buf[..self.list[self.cursor - 1].len])
+    }
+
+    // pub fn prev(&mut self) -> Option<&[u8]> {
+    //     let res = Some(&self.list[self.cursor].buf[..self.list[self.cursor].len]);
+
+    //     if self.cursor < self.size {
+    //         self.cursor += 1;
+    //     }
+
+    //     res
+    // }
 }
 
 pub struct ConsoleWriter {
@@ -181,7 +366,7 @@ impl<'a, A: Alarm<'a>, C: ProcessManagementCapability> ProcessConsole<'a, A, C> 
             rx_buffer: TakeCell::new(rx_buffer),
             command_buffer: TakeCell::new(cmd_buffer),
             command_index: Cell::new(0),
-
+            history: TakeCell::new(&mut init_history),
             previous_byte: Cell::new(0),
 
             running: Cell::new(false),
@@ -461,6 +646,35 @@ impl<'a, A: Alarm<'a>, C: ProcessManagementCapability> ProcessConsole<'a, A, C> 
                             let _ = self.write_bytes(b"Welcome to the process console.\r\n");
                             let _ = self.write_bytes(b"Valid commands are: ");
                             let _ = self.write_bytes(VALID_COMMANDS_STR);
+
+                            match self.history.take() {
+                                Some(val) => val.push(clean_str.as_bytes()),
+                                None => self.write_bytes(b"Could not push command\r\n"),
+                            };
+                        } else if clean_str.starts_with("hup")
+                            || clean_str.starts_with("\u{001B}[A")
+                        {
+                            let _ = self.write_bytes(b"history up\r\n");
+
+                            match self.history.take() {
+                                Some(ht) => match ht.next() {
+                                    Some(ht_cmd_str) => {
+                                        let _ = self.write_bytes(ht_cmd_str);
+                                    }
+                                    None => {
+                                        let _ = self.write_bytes(b"No up commands");
+                                    }
+                                },
+                                None => {
+                                    let _ = self.write_bytes(b"Could not take history\r\n");
+                                }
+                            };
+                        } else if clean_str.starts_with("hdown")
+                            || clean_str.starts_with("\u{001B}[B")
+                        {
+                            let _ = self.write_bytes(b"history down\r\n");
+
+                            // Same as arrow up, but calls prev
                         } else if clean_str.starts_with("start") {
                             let argument = clean_str.split_whitespace().nth(1);
                             argument.map(|name| {
